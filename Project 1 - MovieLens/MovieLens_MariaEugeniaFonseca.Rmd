@@ -1,0 +1,374 @@
+---
+title: "MovieLens Project"
+author: "Maria Eugenia Fonseca"
+date: "May 2019"
+output: pdf_document
+---
+
+## Introduction section
+The MovieLens dataset is a database with over 10 million ratings for over 10,000 movies by more than 72,000 users. The dataset includes the identification of the user and the movie, as well as the rating, genre, and the timestamp. No demographic information is included.
+
+The goal of this project is to predict movie ratings. To do that, the dataset was subsetted into two: the train and validation set. The validation set is 10% of the original data and is not used in the construction of the model.
+
+Due to the large size of the dataset, usual data wrangling (for example, the *lm* model) was not possible because of memory allocation. To solve this problem we computed the least square estimates manually. As the dataset is very sparse, we also included regularization in the model.
+
+```{r Creat test and validation sets, echo=FALSE, message=FALSE, warning=FALSE}
+
+#############################################################
+# Create edx set, validation set, and submission file
+#############################################################
+
+# Note: this first code chunk was provided by the course
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+
+validation <- temp %>% 
+     semi_join(edx, by = "movieId") %>%
+     semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+```{r Loading packages, message=FALSE, warning=FALSE, echo=FALSE, results="hide"}
+requiredPackages <- c("tidyverse", "rafalib", "ggpubr", "knitr", "raster")
+lapply(requiredPackages, library, character.only = TRUE)
+```
+
+In total, `r length(unique(edx$userId))` unique users provided ratings and `r length(unique(edx$movieId))` unique movies were rated. If we think about all the possible combinations between users and movies, we would have more than 746 million combinations. Our test set has a little over 9 million rows, which implies that not every user has rated every movie. This number of ratings is only `r paste0(round(dim(edx)[1] / (length(unique(edx$userId)) * length(unique(edx$movieId))) * 100, 2), "%")` of all possible combinations, which designates a sparse matrix.
+
+In addition to not having every movie rated by every user, some movies were rated more than others and some users have rated more than others, as shown in the two histograms below.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Some movies are more rated than others
+hist_movies <- edx %>%
+  count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 40, fill = "steelblue") + 
+  labs(title = "Histogram of ratings per movie",
+       x = "Number of ratings per movie", y = "Count", fill = element_blank()) +
+  theme_classic()
+
+hist_users <- edx %>%
+  count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 40, fill = "steelblue") + 
+  labs(title = "Histogram of ratings per user",
+       x = "Number of ratings per user", y = "Count", fill = element_blank()) +
+  theme_classic()
+
+ggarrange(hist_movies, hist_users,
+          ncol = 2, nrow = 1)
+```
+
+From the histogram of ratings below, we can observe integer ratings were more frequent than half-integers and that the ratings distribution is left-skewed.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+edx %>%
+  ggplot(aes(rating)) +
+    geom_histogram(fill = "steelblue") + 
+    labs(title = "Histogram of ratings",
+       x = "Ratings", y = "Count", fill = element_blank()) +
+  theme_classic()
+```
+
+The genre variable contains all the genres the movie is characterized in, within twenty different classifications:
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+unique_genres_list <- str_extract_all(unique(edx$genres), "[^|]+") %>%
+  unlist() %>%
+  unique()
+
+unique_genres_list
+```
+
+In respect to genres, we can observe that some genres have a lot more ratings than others and that the ratings appear to be different between genres. The most popular rated genre types are Drama and Comedy. Drama and film-noir are some of the better-rated genre types, while horror is the worst rated.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Creating the long version of both the train and validation datasets. With separeted genres
+edx_genres <- edx %>%
+  separate_rows(genres, sep = "\\|", convert = TRUE)
+
+validation_genres <- validation %>%
+  separate_rows(genres, sep = "\\|", convert = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+hist_genres <- ggplot(edx_genres, aes(x = reorder(genres, genres, function(x) - length(x)))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Ratings per genre",
+       x = "Genre", y = "Counts") +
+   scale_y_continuous(labels = paste0(1:4, "M"),
+                      breaks = 10^6 * 1:4) +
+  coord_flip() +
+  theme_classic()
+
+boxplot_genre_ratings <- ggplot(edx_genres, aes(genres, rating)) + 
+  geom_boxplot(fill = "steelblue", varwidth = TRUE) + 
+  labs(title = "Movie ratings per genre",
+       x = "Genre", y = "Rating", fill = element_blank()) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+#ggarrange(hist_genres, boxplot_genre_ratings,
+#          ncol = 1, nrow = 2)
+hist_genres
+boxplot_genre_ratings
+```
+
+To measure how close the predictions were to the true values in the validation set we will use the Root Mean Square Error (RMSE), defined by the following function:
+```{r}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+```
+
+## Analysis section
+
+As explained before, due to the size of the dataset, modeling the data using a function like *lm* is not appropriate. To solve this problem we computed the least square estimates manually. First, we started with the most simple model to have a baseline: predict the same rating regardless of the user, movie or genre. In this model and all the others tested we have limited the predicted ratings to a minimum value of 0.5 and a maximum of 5. This model would look like this:
+
+$Y_{u,i} = \mu + \epsilon_{u,i}$
+
+Where $u$ is the index for users, and $i$ for movies.
+For this, the estimate for $\mu$ is the average of all ratings, which is `r mean(edx$rating)`.
+
+```{r Method: just the average, message=FALSE, warning=FALSE, echo=FALSE}
+mu_hat <- mean(edx$rating)
+mod_average <- RMSE(edx$rating, mu_hat)
+
+rmse_results <- tibble(Method = "Just the average", RMSE = mod_average)
+kable(rmse_results)
+```
+
+```{r Modeling movie effects, message=FALSE, warning=FALSE, echo=FALSE}
+movie_avgs <- edx %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = mean(rating - mu_hat))
+
+predicted_ratings <- mu_hat + validation %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  pull(b_i)
+
+predicted_ratings <- clamp(predicted_ratings, 0.5, 5)
+
+mod_m <- RMSE(predicted_ratings, validation$rating)
+rmse_results <- bind_rows(rmse_results,
+                          tibble(Method = "Movie Effect Model",
+                                 RMSE = mod_m))
+```
+
+We assume that some movies have higher ratings than others, so the following model considers the movie effect. We estimate the movie effect as the average of the ratings by a movie. For exemple, the movie indexed as 1 (Toy Story) has a positive effect of `r movie_avgs[1,2]` to the average of all ratings (`r mu_hat`), while the movie number 2 (Jumanji) has a negative effect of `r movie_avgs[2,2]`. As shown below, we can see that this already improved the model.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+kable(rmse_results[2,])
+```
+
+```{r Adding Users effects, message=FALSE, warning=FALSE, echo=FALSE}
+user_avgs <- edx %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu_hat - b_i))
+
+predicted_ratings <- validation %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  mutate(pred = mu_hat + b_i + b_u) %>%
+  pull(pred)
+
+predicted_ratings <- clamp(predicted_ratings, 0.5, 5)
+
+mod_m_u <- RMSE(predicted_ratings, validation$rating)
+rmse_results <- bind_rows(rmse_results,
+                          tibble(Method = "Movie + User Effects Model",  
+                                 RMSE = mod_m_u))
+```
+
+Besides the movie effect, we also assume that some users rate movies higher than others, so the next model considers both the movie and the user effect. We estimate the user effect as the average of the ratings per user. For example, the user indexed as 1 has a positive effect of `r user_avgs[1,2]` to the average of all ratings (`r mu_hat`), indicating that this person is more generous to rate. In contrast, user number 2 has a negative effect of `r user_avgs[2,2]`, suggesting this is a more critical viewer.As shown below, this improves the model.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+kable(rmse_results[3,])
+```
+
+As presented before, the movie ratings vary per genre, so the following model will also include the genre effect.
+
+```{r Adding genres effects, message=FALSE, warning=FALSE, echo=FALSE}
+genres_avgs <- edx %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - mu_hat - b_i - b_u))
+
+predicted_ratings <- validation %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  left_join(genres_avgs, by = c('genres')) %>%
+  mutate(pred = mu_hat + b_i + b_u + b_g) %>%
+  pull(pred)
+
+predicted_ratings <- clamp(predicted_ratings, 0.5, 5)
+
+model_m_u_g <- RMSE(predicted_ratings, validation$rating)
+rmse_results <- bind_rows(rmse_results,
+                          tibble(Method = "Movie + User + Genres Effects Model",
+                                 RMSE = model_m_u_g))
+kable(rmse_results[4,])
+```
+
+```{r Adding genres independent effects, message=FALSE, warning=FALSE, echo=FALSE}
+genres_avgs_ind <- edx_genres %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  group_by(genres) %>%
+  summarize(b_gInd = mean(rating - mu_hat - b_i - b_u))
+
+predicted_ratings <- validation_genres %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  left_join(genres_avgs_ind, by = c('genres')) %>%
+  mutate(pred = mu_hat + b_i + b_u + b_gInd) %>%
+  pull(pred)
+
+predicted_ratings <- clamp(predicted_ratings, 0.5, 5)
+
+model_m_u_gInd <- RMSE(predicted_ratings, validation_genres$rating)
+rmse_results <- bind_rows(rmse_results,
+                          tibble(Method = "Movie + User + Genres Ind. Effects Model",
+                                 RMSE = model_m_u_gInd))
+```
+
+The previous model improved the RMSE by only a small amount. This plausibly happened because this model treated the genres together (ie: "Action|Adventure|Animation|Children|Comedy"), holding `r length(unique(edx$genres))` different combinations. To improve this, the next model treated the genres independently: a movie is or not of a certain genre. We estimate the genre effect as the average of the ratings per genre. The most positive genre effect was from documentaries, while the worst effect was from children movies.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+kable(rmse_results[5,])
+```
+
+Treating the genre effect independently reduced the RMSE slightly more than before. Now we will include the user-genre effect, as we expect that users rate genres differently.
+
+```{r Adding genres_user effect, message=FALSE, warning=FALSE, echo=FALSE}
+genres_user_avgs <- edx_genres %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  left_join(genres_avgs_ind, by = 'genres') %>%
+  group_by(genres, userId) %>%
+  summarize(b_gu = mean(rating - mu_hat - b_i - b_u - b_gInd))
+
+predicted_ratings <- validation_genres %>% 
+  left_join(movie_avgs, by = 'movieId') %>%
+  left_join(user_avgs, by = 'userId') %>%
+  left_join(genres_avgs_ind, by = c('genres')) %>%
+  left_join(genres_user_avgs, c("userId", "genres")) %>%
+  mutate(b_gu = ifelse(is.na(b_gu), 0, b_gu),
+         pred = mu_hat + b_i + b_u + b_gInd + b_gu) %>%
+  pull(pred)
+
+predicted_ratings <- clamp(predicted_ratings, 0.5, 5)
+
+model_m_u_gInd_gu <- RMSE(predicted_ratings, validation_genres$rating)
+rmse_results <- bind_rows(rmse_results,
+                          tibble(Method = "Movie + User + Genres Ind. + Genre_User Effects Model",
+                                 RMSE = model_m_u_gInd_gu))
+kable(rmse_results[6,])
+```
+
+This new model increased the RMSE. Our final consideration is that the rating estimate for a movie rated many times is more likely to be more precise than the estimate of a movie rated only a handful of times. Regularization is what allows us to penalize those estimates constructed using small sample sizes. When the sample size is very large, the estimate is more stable, but when the sample size is very small, the estimate is shrunken towards 0. The larger the penalty parameter $\lambda$, the more the estimate is shrunk. As $\lambda$ is a tuning parameter, we did a grid search to choose its optimal value.
+
+```{r Final model with regularization, message=FALSE, warning=FALSE, echo=FALSE}
+lambdas <- seq(11.5, 12.5, 0.2)
+
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  b_g <- edx_genres %>%
+    left_join(b_i, by="movieId") %>%
+    left_join(b_u, by="userId") %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - mu - b_i - b_u)/(n()+l))
+
+  b_gu <- edx_genres %>%
+    left_join(b_i, by="movieId") %>%
+    left_join(b_u, by="userId") %>%
+    left_join(b_g, by="genres") %>%
+    group_by(userId, genres) %>%
+    summarize(b_gu = sum(rating - mu - b_i - b_u - b_g)/(n()+l))
+    
+  predicted_ratings <- validation_genres %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    left_join(b_gu, by = c("userId", "genres")) %>%
+    mutate(b_gu = ifelse(is.na(b_gu), 0, b_gu),
+           pred = mu + b_i + b_u + b_g + b_gu) %>%
+    pull(pred)
+  
+  predicted_ratings <- clamp(predicted_ratings, 0.5, 5)
+  
+  return(RMSE(predicted_ratings, validation_genres$rating))
+})
+
+plot_rmses <- qplot(lambdas, rmses)
+lambda <- lambdas[which.min(rmses)]
+
+rmse_results <- bind_rows(rmse_results,
+                          tibble(Method = "Regularized Movie + User + Genre Ind. + Movie_Genre + Genre_User Effect Model",
+                                 RMSE = min(rmses)))
+kable(rmse_results[7,])
+```
+
+## Results section
+
+To predict movie ratings we build models that considered the effects of movies, users, genres and interactions of these. The best model considered all, achieving an RMSE of `r rmse_results[7,]`. The movie effect decreased the RMSE the most, suggesting that the movie in itself is of greatest importance to explain the rating.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+kable(rmse_results)
+```
+
+## Conclusion section
+
+This project's goal was to predict movie ratings from a database with over 10 million evaluations. To do that, we considered the impact of movies, users and genres to the ratings. We divided the dataset into train and validation to avoid overfitting. As the dataset was large, usual data wrangling was not possible in most computers due to memory allocation. To solve this problem, we computed the least square estimates manually. Due to the sparsity nature of the dataset, we also included regularization. The best-fitted model achieved an RMSE of `r rmse_results[7,]`, which is considered very good for the course's standards. 
+
+It would have been interesting to have more information about the users (e.g. age and gender) and the movies (e.g. actors, director and language) to try to improve the model.
+
