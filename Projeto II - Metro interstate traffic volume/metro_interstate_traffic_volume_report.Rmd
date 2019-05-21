@@ -1,0 +1,217 @@
+---
+title: "Choose Your Own Project: Interstate Traffic Volume"
+subtitle: "edX HarvardX: PH125.9x - Data Science: Capstone"
+author: "Maria Eugenia Fonseca"
+date: "May 2019"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+header-includes:
+- \usepackage{float}
+
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H')
+knitr::opts_chunk$set(fig.align = 'center')
+
+Sys.setlocale("LC_TIME", "English")
+```
+
+
+```{r Loading packages, message=FALSE, warning=FALSE, echo=FALSE, results="hide"}
+requiredPackages <- c("tidyverse", "lubridate", "caret", "R.utils", "knitr", "kableExtra")
+lapply(requiredPackages, library, character.only = TRUE)
+```
+
+\newpage
+
+# Overview 
+This project is the second assignment of the 'Data Science: Capstone' course (PH125.9x), offered by edX HarvardX. The aim of this project is to use a publicly available dataset to apply machine learning techniques that go beyond standard linear regression and to clearly communicate the process and insights gained from the analysis.
+
+## Introduction
+
+Traffic volume on a road is defined as the number of vehicles passing the measurement point per unit time. The traffic counts can be used by local councils to identify which routes are used most, and to either improve that road or provide an alternative if there is an excessive amount of traffic [[1](https://en.wikipedia.org/wiki/Traffic_count)]. 
+
+
+## Project Description
+The objective of this project is to use machine learning models to predict the traffic volume at an american interstate and understand what features are important to explain the transit. Data transformation and feature engineering are included to improve the predictions and, as various modeling approaches are presented, the best model will be selected based on metrics such as the RMSE.
+
+## Dataset
+
+The present project studies the Metro Interstate Traffic Volume Dataset, available at the [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/datasets/Metro+Interstate+Traffic+Volume#) [[2](https://archive.ics.uci.edu/ml/datasets/Metro+Interstate+Traffic+Volume#)]. This dataset is composed with hourly traffic volumes for westbound Interstate 94 (I-94), including weather and holiday features from 2012 to 2018. 
+
+The I-94 is an east–west Interstate Highway connecting the Great Lakes and northern Great Plains regions of the United States. Its western terminus is in Billings, Montana and its eastern terminus is in Port Huron, Michigan [[3](https://en.wikipedia.org/wiki/Interstate_94)]. The measuring point for the traffic volume is roughly midway between Minneapolis and St Paul, in the state of Minnesota, as shown in the figure bellow [[4](https://github.com/dreyco676/Anomaly_Detection_A_to_Z/blob/master/Anomaly%20Detection%20A%20to%20Z.pptx)].
+
+```{r echo=FALSE, fig.cap="The measuring point for the traffic volume at I-94", out.width = '75%'}
+knitr::include_graphics("station301.png")
+```
+
+The dataset is downloaded directly from the UCI Machine Learning Repository. The traffic data is provided by the MN Department of Transportation, while the weather data source is OpenWeatherMap. The dataset includes the following variables:
+
+* Response variable:
+    + Traffic volume: numeric hourly traffic volume
+* Features:
+    + Holiday: categorical US National holidays plus regional holiday
+    + Temperature: average temperature in kelvin
+    + Rain: amount in mm of rain that occurred in the hour
+    + Snow: amount in mm of snow that occurred in the hour
+    + Clouds: percentage of cloud cover
+    + Weather main: short textual description of the current weather
+    + Weather description: longer textual description of the current weather
+    + Date time: hour of the data collected in local CST time 
+
+Data exploration and visualization, as well as transformation and feature engineering will be presented in the next section.
+
+# Methods and Analysis
+## Exploratory Data Analysis
+
+```{r Importing the data, message=FALSE, warning=FALSE, echo=FALSE, error=FALSE}
+temp <- tempfile()
+
+download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/00492/Metro_Interstate_Traffic_Volume.csv.gz", temp, mode = "wb")
+try(gunzip(temp, "Metro_Interstate_Traffic_Volume.csv"))
+metro <- read.csv("Metro_Interstate_Traffic_Volume.csv")
+
+rm(temp)
+```
+
+The dataset contains `r dim(metro)[1]` hourly registers of traffic volume, weather and holiday features. The first observation is dated `r min(date(metro$date_time))` and the last `r max(date(metro$date_time))`, but between August 2014 and June 2015 there are no registers.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+glimpse(metro)
+```
+
+The dataset presents duplicated problems. `r sum(duplicated(metro))` observations are recorded twice, and `r dim(metro)[1] - length(unique(metro$date_time))` observations are duplicated per date time (the only different features are the weather descriptions). We also have some observations described as *thunderstorm*, but with 0 mm of rain that occurred in the hour. The problem occurred similarly with the snow feature.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro %>%
+  filter(date_time == "2012-10-26 09:00:00") %>%
+  kable() %>%
+  kable_styling(latex_options="scale_down")
+```
+
+Considering the above mentioned problems, two actions were taken. First, the duplicated lines were removed. Second, for the duplicated dates with different weather condition:
+
+TEST IF KEEPING THE WEATHER CONDITION IS WORTH IT
+
+
+- If the world "rain", "drizzle" or "thunderstorm" is present in the weather description features, but there is no amount in mm of rain that occurred in the hour, this will not be the weather description considered 
+- If the world "snow" is present in the weather description features, but there is no amount in mm of snow that occurred in the hour, this will not be the weather description considered
+
+For example, four observations were dated *2012-10-24 06:00:00*, with the descriptions as: mist, thunderstorm with light rain, moderate rain and proximity thunderstorm. As no amout of rain in mm was recorded for the period, *mist* was the weather description considered.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro <- unique(metro)
+```
+ 
+ 
+```{r eval=FALSE, echo=FALSE}
+metro2 <- metro %>%
+  group_by(date_time) %>%
+  mutate(n = n(),
+         )
+
+metro %>%
+  filter(rain_1h == 0 
+         & (str_detect(c("rain", "drizzle", "thunderstorm"), as.character(weather_main))
+            | str_detect(c("rain", "drizzle", "thunderstorm"), as.character(weather_description))))
+
+``` 
+  
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro2 <- metro %>%
+  mutate(
+    # Fixing the data. 2016-12-26 is not Christmas Day, 2016-12-25 is
+    holiday = ifelse(date_time == "2016-12-26 00:00:00", "None",
+      ifelse(date_time == "2016-12-25 00:00:00", "Christmas Day", as.character(holiday))
+    ),
+    date = date(date_time),
+    hour = factor(hour(date_time)),
+    month = factor(month(date_time)),
+    year = factor(year(date_time)),
+    weekday = factor(weekdays(date),
+      levels = c(
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+      )
+    )
+  ) %>%
+  group_by(date) %>%
+  # If any hour of the day has the classification of a holiday, apply it to the rest of the day
+  mutate(
+    holiday = ifelse(any(!holiday == "No"), holiday[which(metro$holiday != "No")], "No"),
+    is_holiday = ifelse(holiday == "None", "No", "Yes")
+  ) %>%
+  ungroup() %>%
+  filter(
+    # Removing strange observations
+    temp != 0,               # 0 degrees in Kelvin is not a possible value 
+    rain_1h != 9831.3)       # 9831.3 mm of rain is not a possible value. The record is 305 mm/hour
+            
+```
+  
+The traffic volume is a multimodal distribution with three peaks. The first peak contains the highest frequency of traffic value, below 1000 vehicles per hour. The second peak occours around 3000 vehicles/hour and the third peak, around 4500.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro2 %>%
+  ggplot(aes(traffic_volume)) +
+  geom_histogram(bins = 35, fill = "steelblue") +
+  scale_x_continuous(breaks = seq(0, 7300, by = 1000)) +
+  labs(title = "Histogram of traffic volume",
+       x = "Traffic volume", y = "Count", fill = element_blank()) +
+  theme_classic()
+```
+  
+Some new features were created from the original dataset, such as the weekday. As shown in the boxplot below, the traffic volume appears to increase slowly over the weekdays and is considerably lower on weekends.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro2 %>%
+  ggplot(aes(x = weekday, y = traffic_volume)) +
+  geom_boxplot(fill = "steelblue", varwidth = T) + 
+  labs(
+    title = "Boxplot of traffic volume per weekday",
+    x = "Weekday", y = "Traffic volume", fill = element_blank()
+  ) +
+  theme_classic()
+```
+
+When analyzing the holiday variable, we noted that a holiday is only labeled as such on its first hour. For instance, 2012-12-25 00:00:00 is labeled *Christmas Day*, but 2012-12-25 01:00:00 and all the other following hours of the mentioned day are labeled as *none*. We corrected this in the dataset and moved from `r sum(metro$holiday != "None")` days labeled as holidays to `r sum(metro2$holiday != "None")`.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro2 %>%
+  ggplot(aes(y = traffic_volume, x = is_holiday)) +
+  geom_boxplot(fill = "steelblue", varwidth = T) + 
+  labs(
+    title = "Boxplot of traffic volume",
+    x = "Holiday", y = "Traffic volume", fill = element_blank()
+  ) +
+  theme_classic()
+```
+
+The traffic volume varies per hour of the day, which is an indicative that it will be a good feature to the predictive model. The first big peak in traffic volume of the day is in the early in the morning, from 6 to 7 am. The traffic decreases a little in the late hours of the morning, but increases again after lunch, reaching is maximum between 4 and 5pm.
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+metro2 %>%
+  ggplot(aes(x = hour, y = traffic_volume)) +
+  stat_summary(fun.y = mean, colour="steelblue", geom = "line", aes(group = 1), size = 1.5) + 
+  labs(
+    title = "Traffic volume per hour",
+    x = "Hour", y = "Average hourly traffic volume", fill = element_blank()
+  ) +
+  theme_classic()
+```
+
+Only `r sum(metro2$snow_1h != 0)` observations have amount of snow registered. 
+The amount of rain in mm per hour is heavily right skewed, a transformation will be considered in the following sections.
+
+
+
+## Data Transformation and Feature Engineering
+## Modeling Approaches
+
+# Results
+
+# Conclusion
+
