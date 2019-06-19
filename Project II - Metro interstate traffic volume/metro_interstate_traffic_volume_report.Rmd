@@ -549,7 +549,7 @@ plot(importance, top = 20)
 
 # Conclusion
 
-The objective of this project was to use machine learning models to predict the traffic volume at an American interstate and understand what features were important to explain the transit. In this report, we tried many models, created some new features, selected Caret's eXtreme Gradient Boosting (xgbTree) because of a tradeoff between RMSE and execution time and tunned its seven different hyperparameters. The final model obtained an RMSE of `r grid[8,2]` in the training set and `r grid[8,3]` in the test set. The most important feature to explain traffic *hour*.
+The objective of this project was to use machine learning models to predict the traffic volume at an American interstate and understand what features were important to explain the transit. In this report, we tried many models, created some new features, selected Caret's eXtreme Gradient Boosting (xgbTree) because of a tradeoff between RMSE and execution time and tunned its seven different hyperparameters. The final model obtained an RMSE of `r grid[8,2]` in the training set and `r grid[8,3]` in the test set. The most important feature to explain traffic is *hour*.
 
 # References
 
